@@ -1,11 +1,14 @@
 import express, { type Request, type Response } from 'express';
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { loadTlsOptions } from './tls-options.ts';
 
 const app = express();
-const server = http.createServer(app);
+const tlsOptions = loadTlsOptions();
+const server = tlsOptions ? https.createServer(tlsOptions, app) : http.createServer(app);
 const PORT = Number(process.env.PORT) || 3000;
 
 // Middleware for parsing JSON with a generous limit
@@ -337,5 +340,5 @@ if (fs.existsSync(distDir)) {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`XR Media Studio Server running on port ${PORT}`);
+  console.log(`XR Media Studio Server running at ${tlsOptions ? 'https' : 'http'}://localhost:${PORT}`);
 });

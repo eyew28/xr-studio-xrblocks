@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { loadTlsOptions } from './tls-options.ts';
 
 interface MediaItemData {
   id: string;
@@ -252,7 +253,6 @@ function xrMediaSyncPlugin(): Plugin {
           res.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
             'Access-Control-Allow-Origin': '*',
           });
 
@@ -313,6 +313,21 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
+    https: loadTlsOptions(),
+    fs: {
+      // Vite's default list plus the certs folder, because setting this replaces
+      // the defaults. The server is reachable on the network, and the defaults
+      // alone would miss a private key with any other file name.
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem,key,p12,pfx,cer,der}',
+        '.npmrc',
+        '.yarnrc.yml',
+        '**/.git/**',
+        '**/certs/**',
+      ],
+    },
   },
   plugins: [xrMediaSyncPlugin()],
 });

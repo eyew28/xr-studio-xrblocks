@@ -1087,7 +1087,7 @@ export class XRMediaStudio extends xb.Script {
           // If on localhost, use the actual LAN IPv4 so the Quest on the same Wi-Fi can connect
           if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
             if (info.localIps && info.localIps.length > 0) {
-              displayUrl = `http://${info.localIps[0]}:3000/`;
+              displayUrl = `${window.location.protocol}//${info.localIps[0]}:${info.port}/`;
             }
           }
         }
