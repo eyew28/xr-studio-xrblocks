@@ -19,6 +19,13 @@ const SPLAT_HIT_BOX_SORT_OFFSET_METERS = 1000;
 /** Rays nearly parallel to the drag plane hit it too far away to be useful. */
 const SPLAT_DRAG_MIN_RAY_ANGLE_COSINE = 0.15;
 
+/**
+ * Must stay well inside the camera's far plane (500 m). Otherwise, whenever the
+ * viewer's eye is off the sphere's center, the point being looked at gets
+ * clipped, leaving a black hole in the middle of the view.
+ */
+const MEDIA_SPHERE_RADIUS_METERS = 400;
+
 /** First controller rotates; a second controller's select scales. */
 const SPLAT_VR_MANIPULATION = {
   actions: {
@@ -275,7 +282,7 @@ export class XRMediaStudio extends xb.Script {
     });
 
     const vrExitBtn = new xb.UIButton({
-      label: 'Exit VR',
+      label: 'Exit',
       icon: 'close',
       style: {
         flexGrow: 1,
@@ -620,7 +627,7 @@ export class XRMediaStudio extends xb.Script {
           texture.minFilter = THREE.LinearFilter;
           texture.magFilter = THREE.LinearFilter;
 
-          const geometry = new THREE.SphereGeometry(500, 60, 40);
+          const geometry = new THREE.SphereGeometry(MEDIA_SPHERE_RADIUS_METERS, 60, 40);
           geometry.scale(-1, 1, 1); // Invert faces inward
 
           const material = new THREE.MeshBasicMaterial({ map: texture });
@@ -693,7 +700,7 @@ export class XRMediaStudio extends xb.Script {
     videoTexture.magFilter = THREE.LinearFilter;
     this.currentVideoTexture = videoTexture;
 
-    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    const geometry = new THREE.SphereGeometry(MEDIA_SPHERE_RADIUS_METERS, 60, 40);
     geometry.scale(-1, 1, 1);
 
     const material = new THREE.MeshBasicMaterial({ map: videoTexture });
@@ -972,6 +979,8 @@ export class XRMediaStudio extends xb.Script {
     // Enter VR Buttons
     document.getElementById('btnEnterVR')?.addEventListener('click', () => this.requestVRSession());
     document.getElementById('btnDockEnterVR')?.addEventListener('click', () => this.requestVRSession());
+    document.getElementById('btnEnterAR')?.addEventListener('click', () => this.requestARSession());
+    document.getElementById('btnDockEnterAR')?.addEventListener('click', () => this.requestARSession());
 
     // Desktop Mouse Drag to Look Around 360 photos/videos or rotate splats
     window.addEventListener('pointerdown', (e) => {
@@ -1269,12 +1278,13 @@ export class XRMediaStudio extends xb.Script {
     }
   }
 
-  onXRSessionStarted() {
+  onXRSessionStarted(session?: XRSession) {
     this.state.isXrActive = true;
     this.syncVrInteraction();
     document.getElementById('desktopHud')?.classList.add('hidden');
     this.updateVrCard();
-    this.showToast('Entered WebXR VR Session', 'success');
+    const isAr = session?.environmentBlendMode !== undefined && session.environmentBlendMode !== 'opaque';
+    this.showToast(`Entered WebXR ${isAr ? 'AR' : 'VR'} Session`, 'success');
   }
 
   onXRSessionEnded() {
@@ -1282,7 +1292,7 @@ export class XRMediaStudio extends xb.Script {
     this.syncVrInteraction();
     document.getElementById('desktopHud')?.classList.remove('hidden');
     this.updateHUD();
-    this.showToast('Exited VR Session', 'success');
+    this.showToast('Exited XR Session', 'success');
   }
 
   async requestVRSession() {
@@ -1315,6 +1325,37 @@ export class XRMediaStudio extends xb.Script {
     }
   }
 
+  /**
+   * Starts an AR session: splats appear over passthrough, while the opaque 360
+   * sphere hides it, so 360 media looks the same as in VR. One session mode
+   * handles both, as the file can change without leaving the session.
+   */
+  async requestARSession() {
+    try {
+      if (!(await navigator.xr?.isSessionSupported('immersive-ar'))) {
+        this.showToast('AR needs a passthrough headset. Open on Meta Quest Browser instead!', 'error');
+        document.getElementById('questSyncModal')?.classList.remove('hidden');
+        return;
+      }
+      const sessionManager = xb.core.registry.get(xb.WebXRSessionManager);
+      if (!sessionManager) throw new Error('WebXR is still starting up');
+      // xrblocks fixes its session mode at startup and has no API to change it.
+      // startSession reads the mode synchronously, so VR stays the default for
+      // every other way of starting a session.
+      const modeHolder = sessionManager as unknown as { mode: XRSessionMode };
+      const defaultMode = modeHolder.mode;
+      modeHolder.mode = 'immersive-ar';
+      try {
+        sessionManager.startSession();
+      } finally {
+        modeHolder.mode = defaultMode;
+      }
+    } catch (err) {
+      console.error('Enter AR error:', err);
+      this.showToast('Could not start AR: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    }
+  }
+
   async forceRequestVRSession() {
     if ('xr' in navigator && navigator.xr) {
       try {
@@ -1334,6 +1375,12 @@ export class XRMediaStudio extends xb.Script {
 
   private checkWebXRSupport() {
     if ('xr' in navigator && navigator.xr) {
+      navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+        if (supported) {
+          document.getElementById('btnEnterAR')?.classList.add('hud-btn-vr-ready');
+          document.getElementById('btnDockEnterAR')?.classList.add('hud-btn-vr-ready');
+        }
+      }).catch(() => {});
       navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
         const btn = document.getElementById('btnEnterVR');
         const dockBtn = document.getElementById('btnDockEnterVR');
