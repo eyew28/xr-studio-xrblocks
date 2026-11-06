@@ -34,6 +34,15 @@ const SPLAT_VR_MANIPULATION = {
   },
 };
 
+/** Thumbstick deflection ignored so resting sticks and drift don't move anything. */
+const THUMBSTICK_DEADZONE = 0.15;
+/** Splat movement at full thumbstick deflection. */
+const THUMBSTICK_MOVE_METERS_PER_SECOND = 1;
+/** Splat rotation at full thumbstick deflection. */
+const THUMBSTICK_ROTATE_RADIANS_PER_SECOND = Math.PI / 2;
+/** Longest frame step applied, so a stall can't make the splat jump. */
+const THUMBSTICK_MAX_FRAME_SECONDS = 0.1;
+
 /** Share of splats trimmed from each end of each axis when measuring the subject. */
 const SPLAT_CORE_TRIM = 0.01;
 /** Enough positions to measure the subject without pausing on very large files. */
@@ -142,6 +151,8 @@ export class XRMediaStudio extends xb.Script {
   );
   private splatBounds?: { center: THREE.Vector3; size: THREE.Vector3 };
   private splatDrag?: SplatDrag;
+  private isDraggingVrCard = false;
+  private lastThumbstickUpdateMs = 0;
 
   // Sync state
   private eventSource?: EventSource;
@@ -921,7 +932,84 @@ export class XRMediaStudio extends xb.Script {
     }
   }
 
+  /**
+   * Left stick: moves the splat up/down, and left/right as the viewer sees it.
+   * Right stick: left/right rotates the splat, up/down brings it closer or
+   * moves it away. Only the axis pushed further applies, so pushing forward
+   * slightly off-center doesn't also spin the splat.
+   */
+  private updateThumbstickControls() {
+    const now = performance.now();
+    const seconds = Math.min((now - this.lastThumbstickUpdateMs) / 1000, THUMBSTICK_MAX_FRAME_SECONDS);
+    this.lastThumbstickUpdateMs = now;
+
+    // While dragging the card, xrblocks uses the stick to push and pull it.
+    if (!this.state.isXrActive || !this.splatBounds || this.isDraggingVrCard) return;
+    const session = xb.core.renderer.xr.getSession?.();
+    if (!session) return;
+
+    for (const source of session.inputSources) {
+      // xr-standard mapping: axes 2 and 3 are the thumbstick, with forward negative.
+      const axes = source.gamepad?.axes;
+      if (!axes || axes.length < 4) continue;
+      const stickX = Math.abs(axes[2]) > THUMBSTICK_DEADZONE ? axes[2] : 0;
+      const stickY = Math.abs(axes[3]) > THUMBSTICK_DEADZONE ? axes[3] : 0;
+
+      const distance = THUMBSTICK_MOVE_METERS_PER_SECOND * seconds;
+      if (source.handedness === 'left') {
+        this.mediaGroup.position.y -= stickY * distance;
+        if (stickX !== 0) {
+          const right = this.getLevelViewDirection()?.cross(THREE.Object3D.DEFAULT_UP);
+          if (right) this.mediaGroup.position.addScaledVector(right, stickX * distance);
+        }
+      } else if (source.handedness === 'right') {
+        if (Math.abs(stickY) > Math.abs(stickX)) {
+          // Forward is negative, so pushing up brings the splat toward the viewer.
+          this.moveSplatTowardViewer(-stickY * distance);
+        } else if (stickX !== 0 && !this.splatDrag) {
+          const angle = stickX * THUMBSTICK_ROTATE_RADIANS_PER_SECOND * seconds;
+          this.mediaGroup.quaternion.premultiply(
+            new THREE.Quaternion().setFromAxisAngle(THREE.Object3D.DEFAULT_UP, angle)
+          );
+          this.splatRotation.copy(this.mediaGroup.rotation);
+        }
+      }
+    }
+  }
+
+  /**
+   * Moves the splat level along the line to the viewer, whichever way they're
+   * facing. A negative distance moves it away. It stops on reaching the viewer
+   * instead of passing through and moving away on the other side.
+   */
+  private moveSplatTowardViewer(distance: number) {
+    const toViewer = xb.core.renderer.xr
+      .getCamera()
+      .getWorldPosition(new THREE.Vector3())
+      .sub(this.mediaGroup.position);
+    toViewer.y = 0;
+    const gap = toViewer.length();
+    if (gap > 1e-3) {
+      this.mediaGroup.position.addScaledVector(toViewer.divideScalar(gap), Math.min(distance, gap));
+    } else if (distance < 0) {
+      // Standing at the splat's center, so "away" is simply where the viewer faces.
+      const forward = this.getLevelViewDirection();
+      if (forward) this.mediaGroup.position.addScaledVector(forward, -distance);
+    }
+  }
+
+  /** The viewer's facing direction, ignoring up/down tilt. Undefined when looking straight up or down. */
+  private getLevelViewDirection(): THREE.Vector3 | undefined {
+    const direction = xb.core.renderer.xr.getCamera().getWorldDirection(new THREE.Vector3());
+    direction.y = 0;
+    return direction.lengthSq() > 1e-6 ? direction.normalize() : undefined;
+  }
+
   override onObjectManipulate(event: xb.ManipulationEvent) {
+    if (event.owner === this.vrCard && event.action === 'translate') {
+      this.isDraggingVrCard = event.phase === 'start' || event.phase === 'update';
+      return;
+    }
     if (event.owner !== this.mediaGroup || event.action !== 'rotate') return;
     const controller = event.source.controller;
     if (event.phase === 'start') {
@@ -1340,6 +1428,8 @@ export class XRMediaStudio extends xb.Script {
   // ==========================================
 
   update() {
+    this.updateThumbstickControls();
+
     // Desktop Camera Pan (when not presenting WebXR)
     if (!xb.core.renderer.xr.isPresenting) {
       const type = this.state.currentMedia?.type;
