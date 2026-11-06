@@ -218,6 +218,17 @@ body {
   box-shadow: 0 6px 18px rgba(2, 132, 199, 0.35);
 }
 
+.hud-btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
+.hud-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.7);
+}
+
 .hud-btn-vr {
   background: linear-gradient(135deg, #0284c7 0%, #7c3aed 100%);
   border: 1px solid rgba(168, 85, 247, 0.5);

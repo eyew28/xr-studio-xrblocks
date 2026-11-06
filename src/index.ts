@@ -365,6 +365,7 @@ export class XRMediaStudio extends xb.Script {
           console.warn('Sync decode error:', err);
         }
       });
+      this.eventSource.addEventListener('cleared', () => this.clearLocalMedia());
 
       this.eventSource.onopen = () => {
         const dot = document.getElementById('questStatusDot');
@@ -430,6 +431,40 @@ export class XRMediaStudio extends xb.Script {
     } else if (playlist.length > 0 && this.state.currentIndex === -1) {
       this.loadMediaItem(0, false);
     }
+  }
+
+  /** Deletes all uploaded media from the server, which clears every connected device. */
+  private async clearUploadedMedia() {
+    try {
+      const res = await fetch('/api/session', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+      const { deleted, failed } = (await res.json()) as { deleted: number; failed: string[] };
+      this.clearLocalMedia();
+      if (failed.length > 0) {
+        this.showToast(`Cleared ${deleted} file(s), but could not delete ${failed.length}`, 'error');
+      } else {
+        this.showToast(`Cleared ${deleted} uploaded file(s)`, 'success');
+      }
+    } catch (err) {
+      console.error('Clear media error:', err);
+      this.showToast('Could not clear media: ' + (err instanceof Error ? err.message : String(err)), 'error');
+    }
+  }
+
+  private clearLocalMedia() {
+    for (const item of this.state.playlist) {
+      if (item.url.startsWith('blob:')) URL.revokeObjectURL(item.url);
+    }
+    this.state.playlist = [];
+    this.state.currentIndex = -1;
+    this.state.currentMedia = null;
+    this.state.isPlaying = false;
+    this.cleanupCurrentMedia();
+
+    document.getElementById('bottomDock')?.classList.add('hidden');
+    document.getElementById('welcomeCard')?.classList.remove('hidden');
+    this.renderPlaylistStrip();
+    this.updateVrCard();
   }
 
   private async notifyServerSelection(index: number) {
@@ -623,6 +658,12 @@ export class XRMediaStudio extends xb.Script {
       loader.load(
         item.url,
         (texture) => {
+          // The media may have been cleared or changed while this was loading.
+          if (this.state.currentMedia !== item) {
+            texture.dispose();
+            resolve();
+            return;
+          }
           texture.colorSpace = THREE.SRGBColorSpace;
           texture.minFilter = THREE.LinearFilter;
           texture.magFilter = THREE.LinearFilter;
@@ -693,6 +734,8 @@ export class XRMediaStudio extends xb.Script {
       this.state.isMuted = true;
       await video.play().catch((e) => console.warn('Video play catch:', e));
     }
+    // The media may have been cleared or changed while this was starting.
+    if (this.state.currentMedia !== item) return;
 
     const videoTexture = new THREE.VideoTexture(video);
     videoTexture.colorSpace = THREE.SRGBColorSpace;
@@ -918,6 +961,7 @@ export class XRMediaStudio extends xb.Script {
     document.getElementById('btnWelcomeFiles')?.addEventListener('click', triggerFilePick);
     document.getElementById('btnWelcomeFolder')?.addEventListener('click', triggerFolderPick);
     document.getElementById('btnDockAdd')?.addEventListener('click', triggerFilePick);
+    document.getElementById('btnClearMedia')?.addEventListener('click', () => this.clearUploadedMedia());
 
     fileInput?.addEventListener('change', () => {
       if (fileInput.files && fileInput.files.length > 0) {

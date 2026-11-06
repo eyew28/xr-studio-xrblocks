@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,6 +54,17 @@ function formatBytes(bytes: number, decimals = 1): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
+/** Deletes every file in the uploads folder, reporting any that could not be removed. */
+async function deleteUploadedFiles(): Promise<{ deleted: number; failed: string[] }> {
+  const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const results = await Promise.allSettled(
+    files.map((name) => fs.promises.unlink(path.join(uploadsDir, name)))
+  );
+  const failed = files.filter((_, i) => results[i].status === 'rejected');
+  return { deleted: files.length - failed.length, failed };
+}
+
 // SSE Subscribers
 const sseClients = new Set<Response>();
 
@@ -104,11 +115,13 @@ app.post('/api/session', (req: Request, res: Response) => {
   res.json({ success: true, session });
 });
 
-app.delete('/api/session', (_req: Request, res: Response) => {
+app.delete('/api/session', async (_req: Request, res: Response) => {
   session.playlist = [];
   session.currentIndex = -1;
-  broadcast('sync', { playlist: [], currentIndex: -1, currentMedia: null });
-  res.json({ success: true });
+  const result = await deleteUploadedFiles();
+  // Clients ignore empty 'sync' playlists, as a restarted server also sends them.
+  broadcast('cleared', {});
+  res.json({ success: result.failed.length === 0, ...result });
 });
 
 // 2. File Upload API (Chunked or single stream)
@@ -316,7 +329,7 @@ app.get('/api/network-info', (req: Request, res: Response) => {
 // 7. Static Frontend File Serving
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
-  app.get('*', (_req: Request, res: Response) => {
+  app.get('/{*path}', (_req: Request, res: Response) => {
     res.sendFile(path.join(distDir, 'index.html'));
   });
 } else {

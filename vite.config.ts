@@ -49,6 +49,17 @@ function xrMediaSyncPlugin(): Plugin {
 
   const sseClients = new Set<(data: string) => void>();
 
+  /** Deletes every file in the uploads folder, reporting any that could not be removed. */
+  async function deleteUploadedFiles(): Promise<{ deleted: number; failed: string[] }> {
+    const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true });
+    const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+    const results = await Promise.allSettled(
+      files.map((name) => fs.promises.unlink(path.join(uploadsDir, name)))
+    );
+    const failed = files.filter((_, i) => results[i].status === 'rejected');
+    return { deleted: files.length - failed.length, failed };
+  }
+
   function broadcast(event: string, payload: unknown) {
     const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
     for (const send of sseClients) {
@@ -227,9 +238,11 @@ function xrMediaSyncPlugin(): Plugin {
           if (req.method === 'DELETE') {
             session.playlist = [];
             session.currentIndex = -1;
-            broadcast('sync', { playlist: [], currentIndex: -1, currentMedia: null });
+            const result = await deleteUploadedFiles();
+            // Clients ignore empty 'sync' playlists, as a restarted server also sends them.
+            broadcast('cleared', {});
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true }));
+            res.end(JSON.stringify({ success: result.failed.length === 0, ...result }));
             return;
           }
         }
