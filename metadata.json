@@ -1,0 +1,6 @@
+{
+  "name": "XR Media Studio - Gaussian Splat & 360 Viewer",
+  "description": "An immersive WebXR and desktop viewer for 3D Gaussian Splats (.splat, .ply, .spz), 360-degree panoramic photos, and 360-degree spatial videos with drag-and-drop local uploads.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

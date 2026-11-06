@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>XR Media Studio - Gaussian Splat & 360 Viewer</title>
+    <meta
+      name="description"
+      content="An immersive WebXR and desktop viewer for 3D Gaussian Splats (.splat, .ply, .spz), 360-degree panoramic photos, and 360-degree spatial videos with drag-and-drop local uploads."
+    />
+    <meta property="og:title" content="XR Media Studio - Gaussian Splat & 360 Viewer" />
+    <meta
+      property="og:description"
+      content="An immersive WebXR and desktop viewer for 3D Gaussian Splats (.splat, .ply, .spz), 360-degree panoramic photos, and 360-degree spatial videos with drag-and-drop local uploads."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="/src/index.css" />
+  </head>
+  <body>
+    <!-- Hidden File Inputs -->
+    <input
+      type="file"
+      id="fileInput"
+      accept=".splat,.ply,.spz,.ksplat,.jpg,.jpeg,.png,.webp,.avif,.mp4,.webm,.mov,.mkv"
+      multiple
+      style="display: none;"
+    />
+    <input
+      type="file"
+      id="folderInput"
+      webkitdirectory
+      directory
+      multiple
+      style="display: none;"
+    />
+
+    <!-- Fullscreen Drag & Drop Overlay -->
+    <div id="dropOverlay" class="drop-overlay hidden">
+      <div class="drop-overlay-content">
+        <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+        <h2>Drop Media Files Here</h2>
+        <p>Release to load Gaussian Splats (.splat, .ply, .spz), 360° Photos, or 360° Videos</p>
+      </div>
+    </div>
+
+    <!-- Desktop HUD Interface -->
+    <div id="desktopHud" class="desktop-hud">
+      <!-- Top Navigation Bar -->
+      <header class="top-bar">
+        <div class="brand-zone">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              <circle cx="12" cy="12" r="10" />
+            </svg>
+          </div>
+          <div class="brand-info">
+            <h1 class="brand-title">XR Media Studio</h1>
+            <span class="brand-tagline">Splats · 360° Photos · 360° Videos</span>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <button id="btnBrowseFiles" class="hud-btn hud-btn-secondary" title="Select files from disk">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+              <polyline points="13 2 13 9 20 9" />
+            </svg>
+            <span>Select Files</span>
+          </button>
+          <button id="btnBrowseFolder" class="hud-btn hud-btn-secondary" title="Select entire folder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            <span>Select Folder</span>
+          </button>
+          <button id="btnQuestSync" class="hud-btn hud-btn-quest" title="Connect Meta Quest Headset">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3l-2-2H9l-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
+              <circle cx="8" cy="12" r="2" />
+              <circle cx="16" cy="12" r="2" />
+            </svg>
+            <span id="questStatusText">Connect Quest</span>
+          </button>
+          <button id="btnEnterVR" class="hud-btn hud-btn-vr" title="Enter VR Mode">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3l-2-2H9l-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
+              <circle cx="8" cy="12" r="2" />
+              <circle cx="16" cy="12" r="2" />
+            </svg>
+            <span id="btnEnterVRText">Enter VR</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Welcome / Zero State Modal Card -->
+      <div id="welcomeCard" class="welcome-card">
+        <div class="welcome-header">
+          <div class="welcome-badge">Client-Side WebXR Viewer</div>
+          <h2 class="welcome-title">Drag & Drop Your Media</h2>
+          <p class="welcome-subtitle">
+            View 3D Gaussian Splats, 360° panoramic photos, and 360° spatial videos locally in desktop 3D and immersive VR.
+          </p>
+        </div>
+
+        <div id="welcomeDropTarget" class="welcome-drop-target">
+          <div class="drop-pulse-ring"></div>
+          <div class="drop-target-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+          </div>
+          <div class="drop-target-text">
+            <strong>Drag and drop files or folders here</strong>
+            <span>or choose an option below</span>
+          </div>
+          <div class="drop-target-actions">
+            <button id="btnWelcomeFiles" class="btn-primary">Browse Files</button>
+            <button id="btnWelcomeFolder" class="btn-secondary">Browse Folder</button>
+          </div>
+        </div>
+
+        <div class="format-chips-grid">
+          <div class="format-card">
+            <div class="format-card-icon splat-color">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                <polyline points="2 17 12 22 22 17" />
+                <polyline points="2 12 12 17 22 12" />
+              </svg>
+            </div>
+            <div class="format-card-info">
+              <h4>3D Gaussian Splats</h4>
+              <p>.splat · .ply · .spz</p>
+            </div>
+          </div>
+
+          <div class="format-card">
+            <div class="format-card-icon photo-color">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="14.31" y1="8" x2="20.05" y2="17.94" />
+                <line x1="9.69" y1="8" x2="21.17" y2="8" />
+                <line x1="7.38" y1="12" x2="13.12" y2="2.06" />
+                <line x1="9.69" y1="16" x2="3.95" y2="6.06" />
+                <line x1="14.31" y1="16" x2="2.83" y2="16" />
+                <line x1="16.62" y1="12" x2="10.88" y2="21.94" />
+              </svg>
+            </div>
+            <div class="format-card-info">
+              <h4>360° Equirectangular Photos</h4>
+              <p>.jpg · .png · .webp</p>
+            </div>
+          </div>
+
+          <div class="format-card">
+            <div class="format-card-icon video-color">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+            </div>
+            <div class="format-card-info">
+              <h4>360° Spatial Videos</h4>
+              <p>.mp4 · .webm · .mov</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="welcome-privacy-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span>100% Client-Side Privacy: Your files never leave your device.</span>
+        </div>
+      </div>
+
+      <!-- Bottom Control Dock (Visible when media is loaded) -->
+      <footer id="bottomDock" class="bottom-dock hidden">
+        <!-- Playlist Queue Strip (when multiple files loaded) -->
+        <div id="playlistStrip" class="playlist-strip hidden"></div>
+
+        <div class="dock-main">
+          <!-- Active Media Info -->
+          <div class="dock-media-info">
+            <span id="dockMediaTypeBadge" class="dock-badge">3D SPLAT</span>
+            <div class="dock-text">
+              <h3 id="dockMediaTitle" class="dock-title">Media Title</h3>
+              <p id="dockMediaMeta" class="dock-meta">0.0 MB · File 1 of 1</p>
+            </div>
+          </div>
+
+          <!-- Video Playback Controls (visible for 360 video) -->
+          <div id="videoControls" class="video-controls hidden">
+            <button id="btnVideoPlayPause" class="dock-icon-btn" title="Play / Pause">
+              <svg id="iconPlay" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="5 3 19 12 5 21 5 3" />
+              </svg>
+              <svg id="iconPause" class="hidden" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="4" width="4" height="16" />
+                <rect x="14" y="4" width="4" height="16" />
+              </svg>
+            </button>
+            <button id="btnVideoReplay" class="dock-icon-btn" title="Replay from start">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </svg>
+            </button>
+            <span id="videoTimeDisplay" class="time-display font-mono">00:00 / 00:00</span>
+            <input type="range" id="videoScrubber" class="video-scrubber" min="0" max="100" value="0" step="0.1" />
+            <button id="btnVideoMute" class="dock-icon-btn" title="Mute / Unmute">
+              <svg id="iconVolumeHigh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+              </svg>
+              <svg id="iconVolumeMuted" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <line x1="23" y1="9" x2="17" y2="15" />
+                <line x1="17" y1="9" x2="23" y2="15" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Splat Controls (visible for Gaussian Splats) -->
+          <div id="splatControls" class="splat-controls hidden">
+            <span class="control-label">Scale:</span>
+            <button id="btnSplatScaleDown" class="dock-icon-btn" title="Decrease scale">-</button>
+            <span id="splatScaleDisplay" class="scale-display font-mono">1.0x</span>
+            <button id="btnSplatScaleUp" class="dock-icon-btn" title="Increase scale">+</button>
+            <button id="btnSplatRecenter" class="hud-btn hud-btn-secondary" title="Recenter view">Recenter</button>
+          </div>
+
+          <!-- Playlist / File Switch Actions -->
+          <div class="dock-actions">
+            <button id="btnPrevMedia" class="dock-icon-btn" title="Previous file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="19 20 9 12 19 4 19 20" />
+                <line x1="5" y1="19" x2="5" y2="5" />
+              </svg>
+            </button>
+            <button id="btnNextMedia" class="dock-icon-btn" title="Next file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 4 15 12 5 20 5 4" />
+                <line x1="19" y1="5" x2="19" y2="19" />
+              </svg>
+            </button>
+            <button id="btnDockAdd" class="hud-btn hud-btn-secondary" title="Add or replace file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              <span>Add File</span>
+            </button>
+            <button id="btnDockEnterVR" class="hud-btn hud-btn-vr" title="Enter VR Mode">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3l-2-2H9l-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
+                <circle cx="8" cy="12" r="2" />
+                <circle cx="16" cy="12" r="2" />
+              </svg>
+              <span>Enter VR</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="dock-hint">
+          <span>Click & drag to look around · Scroll to zoom · Click <strong>ENTER VR</strong> to immerse on Quest</span>
+        </div>
+      </footer>
+
+      <!-- Toast Notifications Container -->
+      <div id="toastContainer" class="toast-container"></div>
+    </div>
+
+    <!-- Meta Quest Wireless Browser Sync Modal -->
+    <div id="questSyncModal" class="help-modal hidden">
+      <div class="help-modal-card quest-sync-card">
+        <div class="help-modal-header">
+          <div class="help-modal-badge">Meta Quest Browser Wireless Sync</div>
+          <h3>View in Meta Quest Browser</h3>
+          <p class="quest-modal-subtitle">Load files here on your PC, then open this URL in your Quest headset to view in full 6DOF VR without Virtual Desktop.</p>
+          <button id="btnCloseQuestModal" class="close-modal-btn">×</button>
+        </div>
+
+        <div class="quest-url-box">
+          <span class="url-label">Meta Quest Browser URL:</span>
+          <div class="url-copy-row">
+            <input type="text" id="questUrlInput" readonly class="quest-url-field font-mono" />
+            <button id="btnCopyQuestUrl" class="btn-primary copy-btn">Copy</button>
+          </div>
+          <p class="url-hint">Type or paste this URL into the address bar of the <strong>Meta Quest Browser</strong> inside your headset.</p>
+        </div>
+
+        <div class="quest-steps">
+          <div class="quest-step-item">
+            <div class="quest-step-icon">1</div>
+            <div class="quest-step-desc">
+              <strong>Drag & drop or select files on this PC</strong>
+              <span>Upload your .splat, .ply, .spz, 360° photo, or 360° video.</span>
+            </div>
+          </div>
+          <div class="quest-step-item">
+            <div class="quest-step-icon">2</div>
+            <div class="quest-step-desc">
+              <strong>Put on your Quest & open Meta Quest Browser</strong>
+              <span>Visit the URL above (both PC and Quest can view simultaneously).</span>
+            </div>
+          </div>
+          <div class="quest-step-item">
+            <div class="quest-step-icon">3</div>
+            <div class="quest-step-desc">
+              <strong>Tap "Enter VR" on your Quest</strong>
+              <span>Immerse in full 3D VR with hand tracking & spatial controls!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="quest-connection-status">
+          <span id="questStatusDot" class="status-indicator-dot"></span>
+          <span id="questConnectionText">Waiting for Quest Browser connection...</span>
+        </div>
+
+        <div class="help-modal-actions">
+          <button id="btnDismissQuestModal" class="btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- WebXR Virtual Desktop / Quest Guidance Modal -->
+    <div id="webxrHelpModal" class="help-modal hidden">
+      <div class="help-modal-card">
+        <div class="help-modal-header">
+          <div class="help-modal-badge">Quest & Virtual Desktop Setup</div>
+          <h3>Enabling WebXR on PC Chrome</h3>
+          <button id="btnCloseHelpModal" class="close-modal-btn">×</button>
+        </div>
+        <div class="help-modal-body">
+          <div class="help-step">
+            <span class="step-num">1</span>
+            <div class="step-content">
+              <strong>Check Virtual Desktop OpenXR Runtime:</strong>
+              <p>In the Virtual Desktop Streamer window on your PC, open <em>Settings</em> and verify that <strong>OpenXR runtime</strong> is set to <em>Virtual Desktop</em> (or <em>SteamVR</em>).</p>
+            </div>
+          </div>
+          <div class="help-step">
+            <span class="step-num">2</span>
+            <div class="step-content">
+              <strong>Check PC Chrome WebXR Flag:</strong>
+              <p>In Chrome on your PC, navigate to <code>chrome://flags</code>, search for <code>WebXR</code>, and ensure <strong>WebXR Device API</strong> is set to <em>Enabled</em>.</p>
+            </div>
+          </div>
+          <div class="help-step">
+            <span class="step-num">3</span>
+            <div class="step-content">
+              <strong>Native Quest Browser Option:</strong>
+              <p>You can also open this development URL directly in the native <strong>Meta Quest Browser</strong> on your Quest headset for zero-setup 1-click VR!</p>
+            </div>
+          </div>
+        </div>
+        <div class="help-modal-actions">
+          <button id="btnTryEnterVRAnyway" class="btn-primary">Try Requesting VR Anyway</button>
+          <button id="btnDismissHelpModal" class="btn-secondary">Got It</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

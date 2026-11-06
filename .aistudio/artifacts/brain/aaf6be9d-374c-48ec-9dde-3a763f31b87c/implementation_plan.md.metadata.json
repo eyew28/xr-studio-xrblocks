@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan for the XR Media Studio: a WebXR and desktop viewer for 3D Gaussian Splats (.splat, .ply, .spz), 360 equirectangular photos, and 360 videos with seamless local drag-and-drop file uploads, persistent floating spatial UI in VR, file switching, video playback controls, and clean exit-VR flow.",
+  "updatedAt": "2026-11-06T04:23:12.536474127Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

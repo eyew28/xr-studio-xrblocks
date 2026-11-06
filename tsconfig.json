@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "outDir": "build",
+    "target": "es2024",
+    "module": "es2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "ESNext.Temporal"],
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "forceConsistentCasingInFileNames": true,
+    "rootDir": "src",
+    "sourceMap": true,
+    "importHelpers": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "types": ["dom-speech-recognition", "node"],
+    "paths": {
+      "rapier3d": ["./node_modules/@dimforge/rapier3d-simd-compat/rapier"],
+      "troika-three-text": [
+        "./node_modules/troika-types/packages/troika-three-text/dist/src/index"
+      ]
+    }
+  },
+  "include": ["src/**/*.ts", "types.d.ts"]
+}
