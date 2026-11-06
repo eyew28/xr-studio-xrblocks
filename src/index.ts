@@ -1219,6 +1219,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Configure WebXR session specifically for VR (supports Meta Quest, SteamVR, PCVR)
   options.enableVR();
+  // xrblocks also requests 'unbounded' by default. Quest Browser rejects any
+  // immersive-vr request that includes it, even as an optional feature, with
+  // NotSupportedError, so leave it out.
+  options.webxrOptionalFeatures = ['local-floor', 'bounded-floor'];
   options.enableHands();
   options.hands.visualization = true;
 
