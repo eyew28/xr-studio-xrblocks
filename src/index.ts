@@ -10,6 +10,30 @@ import {
   identifyMediaType,
 } from './types.ts';
 
+/** Splat rotation per meter the controller's ray travels across the splat. */
+const SPLAT_ROTATE_RADIANS_PER_METER = 2;
+/** Smallest side of the splat's hit box, so thin splats stay easy to point at. */
+const SPLAT_HIT_BOX_MIN_SIZE_METERS = 0.2;
+/** Added to hit box hit distances: farther than the VR card can be pushed. */
+const SPLAT_HIT_BOX_SORT_OFFSET_METERS = 1000;
+/** Rays nearly parallel to the drag plane hit it too far away to be useful. */
+const SPLAT_DRAG_MIN_RAY_ANGLE_COSINE = 0.15;
+
+/** First controller rotates; a second controller's select scales. */
+const SPLAT_VR_MANIPULATION = {
+  actions: {
+    rotate: true,
+    scale: { minScale: 0.1, maxScale: 10 },
+  },
+};
+
+interface SplatDrag {
+  baseQuaternion: THREE.Quaternion;
+  plane: THREE.Plane;
+  right: THREE.Vector3;
+  startPoint?: THREE.Vector3;
+}
+
 /**
  * XRMediaStudio
  *
@@ -70,6 +94,15 @@ export class XRMediaStudio extends xb.Script {
   private splatRotation = new THREE.Euler(0, 0, 0);
   private splatDistance = -1.5;
 
+  // VR splat interaction. Spark's splat raycast is too slow to run every frame,
+  // so an invisible box around the splat is what controller rays hit.
+  private splatHitBox = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide })
+  );
+  private splatBounds?: { center: THREE.Vector3; size: THREE.Vector3 };
+  private splatDrag?: SplatDrag;
+
   // Sync state
   private eventSource?: EventSource;
   private isSyncingFromRemote = false;
@@ -81,6 +114,18 @@ export class XRMediaStudio extends xb.Script {
 
   init() {
     this.add(this.mediaGroup);
+    this.splatHitBox.visible = false;
+    // Sort hit box hits behind the VR card, so its buttons stay clickable even
+    // when the box is between the card and the viewer. Rays still land on the
+    // real hit point, which is what the reticle and manipulation use.
+    this.splatHitBox.raycast = (raycaster, intersects) => {
+      const firstNewHit = intersects.length;
+      THREE.Mesh.prototype.raycast.call(this.splatHitBox, raycaster, intersects);
+      for (let i = firstNewHit; i < intersects.length; i++) {
+        intersects[i].distance += SPLAT_HIT_BOX_SORT_OFFSET_METERS;
+      }
+    };
+    this.mediaGroup.add(this.splatHitBox);
 
     // Setup ambient and directional lighting for splats and spatial UI
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x333333, 2.5);
@@ -255,7 +300,12 @@ export class XRMediaStudio extends xb.Script {
     // Main In-VR Card Assembly
     this.vrCard = new xb.UICard({
       size: { width: 0.68, height: 'auto' },
-      manipulation: true,
+      manipulation: {
+        actions: {
+          translate: { faceCamera: true, pushPull: true },
+          scale: true,
+        },
+      },
       edge: true,
       style: {
         flexDirection: 'column',
@@ -527,6 +577,7 @@ export class XRMediaStudio extends xb.Script {
     }
 
     const splatMesh = new SplatMesh({ url: item.url });
+    splatMesh.xb = { pointerEvents: 'none' };
     this.currentSplatMesh = splatMesh;
     this.mediaGroup.add(splatMesh);
 
@@ -534,6 +585,8 @@ export class XRMediaStudio extends xb.Script {
     this.mediaGroup.position.set(0, 1.2, this.splatDistance);
 
     await splatMesh.initialized;
+    // Another file may have been selected while this one was loading.
+    if (this.currentSplatMesh !== splatMesh) return;
 
     // Auto-normalize bounding box to a comfortable viewing scale
     const bbox = splatMesh.getBoundingBox();
@@ -543,16 +596,11 @@ export class XRMediaStudio extends xb.Script {
       const maxDim = Math.max(size.x, size.y, size.z);
 
       if (maxDim > 0) {
-        const targetScale = Math.min(2.5, 1.6 / maxDim);
-        this.state.splatScale = targetScale;
-        splatMesh.scale.setScalar(targetScale);
-        splatMesh.position.set(
-          -center.x * targetScale,
-          -center.y * targetScale,
-          -center.z * targetScale
-        );
+        this.splatBounds = { center, size };
+        this.applySplatScale(Math.min(2.5, 1.6 / maxDim));
       }
     }
+    this.syncVrInteraction();
 
     this.showToast(`Splat ready: ${item.name}`, 'success');
   }
@@ -667,6 +715,9 @@ export class XRMediaStudio extends xb.Script {
       this.currentSplatMesh.dispose();
       this.currentSplatMesh = undefined;
     }
+    this.splatBounds = undefined;
+    this.resetSplatTransform();
+    this.syncVrInteraction();
 
     if (this.currentSphereMesh) {
       this.mediaGroup.remove(this.currentSphereMesh);
@@ -732,17 +783,114 @@ export class XRMediaStudio extends xb.Script {
 
   adjustSplatScale(delta: number) {
     if (!this.currentSplatMesh) return;
-    this.state.splatScale = Math.max(0.1, Math.min(5.0, this.state.splatScale + delta));
-    this.currentSplatMesh.scale.setScalar(this.state.splatScale);
+    this.applySplatScale(Math.max(0.1, Math.min(5.0, this.state.splatScale + delta)));
     const display = document.getElementById('splatScaleDisplay');
     if (display) display.textContent = `${this.state.splatScale.toFixed(1)}x`;
   }
 
+  /** Scales the splat while keeping it centered in mediaGroup, its rotation pivot. */
+  private applySplatScale(scale: number) {
+    this.state.splatScale = scale;
+    if (!this.currentSplatMesh) return;
+    this.currentSplatMesh.scale.setScalar(scale);
+    if (!this.splatBounds) return;
+    const { center, size } = this.splatBounds;
+    this.currentSplatMesh.position.copy(center).multiplyScalar(-scale);
+    this.splatHitBox.scale.set(
+      Math.max(size.x * scale, SPLAT_HIT_BOX_MIN_SIZE_METERS),
+      Math.max(size.y * scale, SPLAT_HIT_BOX_MIN_SIZE_METERS),
+      Math.max(size.z * scale, SPLAT_HIT_BOX_MIN_SIZE_METERS)
+    );
+  }
+
   recenterSplat() {
-    this.splatRotation.set(0, 0, 0);
+    this.resetSplatTransform();
     this.splatDistance = -1.5;
     this.mediaGroup.position.set(0, 1.2, this.splatDistance);
+  }
+
+  private resetSplatTransform() {
+    this.splatRotation.set(0, 0, 0);
     this.mediaGroup.rotation.set(0, 0, 0);
+    this.mediaGroup.scale.setScalar(1);
+  }
+
+  // ==========================================
+  // VR Splat & UI Interaction
+  // ==========================================
+
+  /**
+   * Enables controller interaction only inside a VR session. On desktop the
+   * mouse also drives xrblocks interaction, which would fight the desktop
+   * pointer handlers.
+   */
+  private syncVrInteraction() {
+    const canManipulateSplat =
+      this.state.isXrActive && !!this.currentSplatMesh && !!this.splatBounds;
+    this.splatHitBox.visible = canManipulateSplat;
+    this.mediaGroup.xb = canManipulateSplat
+      ? { manipulation: SPLAT_VR_MANIPULATION }
+      : undefined;
+    if (this.vrCard) {
+      this.vrCard.edge = { translateFromSurface: this.state.isXrActive };
+    }
+  }
+
+  override onObjectManipulate(event: xb.ManipulationEvent) {
+    if (event.owner !== this.mediaGroup || event.action !== 'rotate') return;
+    const controller = event.source.controller;
+    if (event.phase === 'start') {
+      // xrblocks' rotate only turns around one axis. Keep its session handling,
+      // which hands over to two-controller scale, but rotate freely here.
+      event.preventDefault();
+      this.startSplatDrag(controller);
+    } else if (event.phase === 'update') {
+      this.updateSplatDrag(controller);
+    } else {
+      this.splatDrag = undefined;
+      this.splatRotation.copy(this.mediaGroup.rotation);
+    }
+  }
+
+  private startSplatDrag(controller: THREE.Object3D) {
+    const center = this.mediaGroup.getWorldPosition(new THREE.Vector3());
+    const toSplat = center.clone().sub(controller.getWorldPosition(new THREE.Vector3()));
+    toSplat.y = 0;
+    if (toSplat.lengthSq() < 1e-6) {
+      controller.getWorldDirection(toSplat).negate();
+      toSplat.y = 0;
+    }
+    toSplat.normalize();
+    this.splatDrag = {
+      baseQuaternion: this.mediaGroup.quaternion.clone(),
+      plane: new THREE.Plane().setFromNormalAndCoplanarPoint(toSplat, center),
+      right: new THREE.Vector3().crossVectors(toSplat, THREE.Object3D.DEFAULT_UP),
+    };
+    this.updateSplatDrag(controller);
+  }
+
+  /** Turns the splat like a ball: the side facing the viewer follows the ray. */
+  private updateSplatDrag(controller: THREE.Object3D) {
+    const drag = this.splatDrag;
+    if (!drag) return;
+    const origin = controller.getWorldPosition(new THREE.Vector3());
+    const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      controller.getWorldQuaternion(new THREE.Quaternion())
+    );
+    if (Math.abs(direction.dot(drag.plane.normal)) < SPLAT_DRAG_MIN_RAY_ANGLE_COSINE) return;
+    const point = new THREE.Ray(origin, direction).intersectPlane(drag.plane, new THREE.Vector3());
+    if (!point) return;
+    if (!drag.startPoint) {
+      drag.startPoint = point;
+      return;
+    }
+    const moved = point.sub(drag.startPoint);
+    const yaw = moved.dot(drag.right) * SPLAT_ROTATE_RADIANS_PER_METER;
+    const pitch = -moved.y * SPLAT_ROTATE_RADIANS_PER_METER;
+    this.mediaGroup.quaternion
+      .setFromAxisAngle(THREE.Object3D.DEFAULT_UP, yaw)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(drag.right, pitch))
+      .multiply(drag.baseQuaternion);
   }
 
   // ==========================================
@@ -1123,6 +1271,7 @@ export class XRMediaStudio extends xb.Script {
 
   onXRSessionStarted() {
     this.state.isXrActive = true;
+    this.syncVrInteraction();
     document.getElementById('desktopHud')?.classList.add('hidden');
     this.updateVrCard();
     this.showToast('Entered WebXR VR Session', 'success');
@@ -1130,6 +1279,7 @@ export class XRMediaStudio extends xb.Script {
 
   onXRSessionEnded() {
     this.state.isXrActive = false;
+    this.syncVrInteraction();
     document.getElementById('desktopHud')?.classList.remove('hidden');
     this.updateHUD();
     this.showToast('Exited VR Session', 'success');
