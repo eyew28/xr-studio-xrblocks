@@ -34,6 +34,39 @@ const SPLAT_VR_MANIPULATION = {
   },
 };
 
+/** Share of splats trimmed from each end of each axis when measuring the subject. */
+const SPLAT_CORE_TRIM = 0.01;
+/** Enough positions to measure the subject without pausing on very large files. */
+const SPLAT_CORE_MAX_SAMPLES = 100_000;
+
+/**
+ * Measures the splat's main subject, ignoring far-off stray splats. Captures
+ * often contain a few "floaters" that are many times farther away than the
+ * subject, which makes a full bounding box far too big and pulls its center
+ * away from the subject.
+ */
+function measureSplatCore(splatMesh: SplatMesh): { center: THREE.Vector3; size: THREE.Vector3 } | undefined {
+  const numSplats = splatMesh.packedSplats?.numSplats ?? 0;
+  const step = Math.max(1, Math.floor(numSplats / SPLAT_CORE_MAX_SAMPLES));
+  const axes: number[][] = [[], [], []];
+  splatMesh.forEachSplat((index, center) => {
+    if (index % step !== 0) return;
+    axes[0].push(center.x);
+    axes[1].push(center.y);
+    axes[2].push(center.z);
+  });
+  if (axes[0].length === 0) return undefined;
+
+  const box = new THREE.Box3();
+  axes.forEach((values, axis) => {
+    const sorted = Float64Array.from(values).sort();
+    const trim = Math.floor(sorted.length * SPLAT_CORE_TRIM);
+    box.min.setComponent(axis, sorted[trim]);
+    box.max.setComponent(axis, sorted[sorted.length - 1 - trim]);
+  });
+  return { center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()) };
+}
+
 interface SplatDrag {
   baseQuaternion: THREE.Quaternion;
   plane: THREE.Plane;
@@ -620,6 +653,8 @@ export class XRMediaStudio extends xb.Script {
 
     const splatMesh = new SplatMesh({ url: item.url });
     splatMesh.xb = { pointerEvents: 'none' };
+    // PLY captures usually store Y pointing down, so they would load upside down.
+    if (item.formatExtension === 'PLY') splatMesh.rotation.z = Math.PI;
     this.currentSplatMesh = splatMesh;
     this.mediaGroup.add(splatMesh);
 
@@ -630,15 +665,12 @@ export class XRMediaStudio extends xb.Script {
     // Another file may have been selected while this one was loading.
     if (this.currentSplatMesh !== splatMesh) return;
 
-    // Auto-normalize bounding box to a comfortable viewing scale
-    const bbox = splatMesh.getBoundingBox();
-    if (!bbox.isEmpty()) {
-      const center = bbox.getCenter(new THREE.Vector3());
-      const size = bbox.getSize(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-
+    // Auto-normalize the splat's main subject to a comfortable viewing scale
+    const core = measureSplatCore(splatMesh);
+    if (core) {
+      const maxDim = Math.max(core.size.x, core.size.y, core.size.z);
       if (maxDim > 0) {
-        this.splatBounds = { center, size };
+        this.splatBounds = core;
         this.applySplatScale(Math.min(2.5, 1.6 / maxDim));
       }
     }
@@ -845,7 +877,10 @@ export class XRMediaStudio extends xb.Script {
     this.currentSplatMesh.scale.setScalar(scale);
     if (!this.splatBounds) return;
     const { center, size } = this.splatBounds;
-    this.currentSplatMesh.position.copy(center).multiplyScalar(-scale);
+    this.currentSplatMesh.position
+      .copy(center)
+      .applyQuaternion(this.currentSplatMesh.quaternion)
+      .multiplyScalar(-scale);
     this.splatHitBox.scale.set(
       Math.max(size.x * scale, SPLAT_HIT_BOX_MIN_SIZE_METERS),
       Math.max(size.y * scale, SPLAT_HIT_BOX_MIN_SIZE_METERS),
