@@ -664,8 +664,8 @@ export class XRMediaStudio extends xb.Script {
 
     const splatMesh = new SplatMesh({ url: item.url });
     splatMesh.xb = { pointerEvents: 'none' };
-    // PLY captures usually store Y pointing down, so they would load upside down.
-    if (item.formatExtension === 'PLY') splatMesh.rotation.z = Math.PI;
+    // PLY and SPZ captures usually store Y pointing down, so they would load upside down.
+    if (item.formatExtension === 'PLY' || item.formatExtension === 'SPZ') splatMesh.rotation.z = Math.PI;
     this.currentSplatMesh = splatMesh;
     this.mediaGroup.add(splatMesh);
 
