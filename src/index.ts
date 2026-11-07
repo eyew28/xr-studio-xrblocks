@@ -43,6 +43,35 @@ const THUMBSTICK_ROTATE_RADIANS_PER_SECOND = Math.PI / 2;
 /** Longest frame step applied, so a stall can't make the splat jump. */
 const THUMBSTICK_MAX_FRAME_SECONDS = 0.1;
 
+// SuperSplat's starting view, from src/scene-config.ts and src/camera.ts in
+// playcanvas/supersplat: an orbit camera looking at (0, 0.5, 0) from azimuth
+// -45 and elevation -10, at a distance of 1 / sin(fov / 2). It doesn't move to
+// fit the splat, and the splat keeps its file scale and origin.
+const SUPERSPLAT_FOCAL_POINT = new THREE.Vector3(0, 0.5, 0);
+const SUPERSPLAT_AZIMUTH_DEGREES = -45;
+const SUPERSPLAT_ELEVATION_DEGREES = -10;
+/** Applies to the wider axis of the view. */
+const SUPERSPLAT_FOV_DEGREES = 85;
+
+/** Where SuperSplat's camera starts, in the splat's coordinates after loading. */
+function superSplatCameraPosition(): THREE.Vector3 {
+  const elevation = THREE.MathUtils.degToRad(-SUPERSPLAT_ELEVATION_DEGREES);
+  const azimuth = THREE.MathUtils.degToRad(-SUPERSPLAT_AZIMUTH_DEGREES);
+  const distance = 1 / Math.sin(THREE.MathUtils.degToRad(SUPERSPLAT_FOV_DEGREES / 2));
+  return new THREE.Vector3(
+    -Math.cos(elevation) * Math.sin(azimuth),
+    Math.sin(elevation),
+    Math.cos(elevation) * Math.cos(azimuth)
+  )
+    .multiplyScalar(distance)
+    .add(SUPERSPLAT_FOCAL_POINT);
+}
+
+/** Heading of a direction around the vertical axis, where -Z is 0. */
+function yawOf(direction: THREE.Vector3): number {
+  return Math.atan2(-direction.x, -direction.z);
+}
+
 /** Share of splats trimmed from each end of each axis when measuring the subject. */
 const SPLAT_CORE_TRIM = 0.01;
 /** Enough positions to measure the subject without pausing on very large files. */
@@ -141,7 +170,8 @@ export class XRMediaStudio extends xb.Script {
 
   // Splat interactive rotation & zoom
   private splatRotation = new THREE.Euler(0, 0, 0);
-  private splatDistance = -1.5;
+  private defaultCameraFov?: number;
+  private desktopSplatViewActive = false;
 
   // VR splat interaction. Spark's splat raycast is too slow to run every frame,
   // so an invisible box around the splat is what controller rays hit.
@@ -669,22 +699,16 @@ export class XRMediaStudio extends xb.Script {
     this.currentSplatMesh = splatMesh;
     this.mediaGroup.add(splatMesh);
 
-    // Position in front of the viewer
-    this.mediaGroup.position.set(0, 1.2, this.splatDistance);
-
     await splatMesh.initialized;
     // Another file may have been selected while this one was loading.
     if (this.currentSplatMesh !== splatMesh) return;
 
-    // Auto-normalize the splat's main subject to a comfortable viewing scale
+    // The main subject is the rotation pivot and the VR hit box; the splat
+    // itself keeps its file scale, as in SuperSplat.
     const core = measureSplatCore(splatMesh);
-    if (core) {
-      const maxDim = Math.max(core.size.x, core.size.y, core.size.z);
-      if (maxDim > 0) {
-        this.splatBounds = core;
-        this.applySplatScale(Math.min(2.5, 1.6 / maxDim));
-      }
-    }
+    if (core && Math.max(core.size.x, core.size.y, core.size.z) > 0) this.splatBounds = core;
+    this.applySplatScale(1);
+    this.frameSplatLikeSuperSplat();
     this.syncVrInteraction();
 
     this.showToast(`Splat ready: ${item.name}`, 'success');
@@ -810,6 +834,7 @@ export class XRMediaStudio extends xb.Script {
     }
     this.splatBounds = undefined;
     this.resetSplatTransform();
+    this.restoreDesktopCamera();
     this.syncVrInteraction();
 
     if (this.currentSphereMesh) {
@@ -901,8 +926,79 @@ export class XRMediaStudio extends xb.Script {
 
   recenterSplat() {
     this.resetSplatTransform();
-    this.splatDistance = -1.5;
-    this.mediaGroup.position.set(0, 1.2, this.splatDistance);
+    this.frameSplatLikeSuperSplat();
+  }
+
+  /**
+   * Places the splat so the viewer sees it the way SuperSplat first shows it:
+   * their head (or the desktop camera) takes the place of SuperSplat's camera.
+   * The world can't tilt in VR, so its 10 degree downward look comes from the
+   * splat sitting below eye level instead.
+   */
+  private frameSplatLikeSuperSplat() {
+    const mesh = this.currentSplatMesh;
+    if (!mesh) return;
+    const viewer = this.getViewerPose();
+
+    // The camera's position and gaze in mediaGroup's coordinates.
+    const camera = superSplatCameraPosition();
+    const cameraLocal = camera.clone().multiplyScalar(this.state.splatScale).add(mesh.position);
+    const gaze = SUPERSPLAT_FOCAL_POINT.clone().sub(camera);
+
+    this.mediaGroup.scale.setScalar(1);
+    this.mediaGroup.rotation.set(0, viewer.yaw - yawOf(gaze), 0);
+    this.mediaGroup.position.copy(viewer.position).sub(cameraLocal.applyQuaternion(this.mediaGroup.quaternion));
+    this.splatRotation.copy(this.mediaGroup.rotation);
+    this.applyDesktopSplatView(viewer.yaw);
+  }
+
+  /** The viewer's eye position and the direction they face, ignoring tilt. */
+  private getViewerPose(): { position: THREE.Vector3; yaw: number } {
+    const xr = xb.core.renderer.xr;
+    const camera = xr.isPresenting ? xr.getCamera() : xb.core.camera;
+    const forward = camera.getWorldDirection(new THREE.Vector3());
+    forward.y = 0;
+    return {
+      position: camera.getWorldPosition(new THREE.Vector3()),
+      yaw: forward.lengthSq() > 1e-6 ? yawOf(forward) : 0,
+    };
+  }
+
+  /**
+   * On desktop, also matches SuperSplat's camera tilt and field of view. In VR
+   * the headset sets both. The desktop simulator keeps both until the viewer
+   * moves the camera.
+   */
+  private applyDesktopSplatView(yaw: number) {
+    if (xb.core.renderer.xr.isPresenting) return;
+    const camera = xb.core.camera;
+    this.defaultCameraFov ??= camera.fov;
+    camera.quaternion.setFromEuler(
+      new THREE.Euler(THREE.MathUtils.degToRad(SUPERSPLAT_ELEVATION_DEGREES), yaw, 0, 'YXZ')
+    );
+    this.desktopSplatViewActive = true;
+    this.updateDesktopSplatFov();
+  }
+
+  private updateDesktopSplatFov() {
+    if (!this.desktopSplatViewActive) return;
+    const camera = xb.core.camera;
+    const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+    const halfFov = THREE.MathUtils.degToRad(SUPERSPLAT_FOV_DEGREES / 2);
+    // three.js measures fov vertically; SuperSplat applies it to the wider axis.
+    const verticalHalfFov = aspect > 1 ? Math.atan(Math.tan(halfFov) / aspect) : halfFov;
+    camera.fov = THREE.MathUtils.radToDeg(2 * verticalHalfFov);
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+  }
+
+  private restoreDesktopCamera() {
+    if (!this.desktopSplatViewActive) return;
+    this.desktopSplatViewActive = false;
+    if (this.defaultCameraFov !== undefined) {
+      xb.core.camera.fov = this.defaultCameraFov;
+      xb.core.camera.updateProjectionMatrix();
+    }
   }
 
   private resetSplatTransform() {
@@ -1180,10 +1276,11 @@ export class XRMediaStudio extends xb.Script {
 
     window.addEventListener('wheel', (e) => {
       if (this.currentSplatMesh) {
-        this.splatDistance = Math.max(-5.0, Math.min(-0.4, this.splatDistance + e.deltaY * 0.002));
-        this.mediaGroup.position.z = this.splatDistance;
+        this.mediaGroup.position.z += e.deltaY * 0.002;
       }
     });
+
+    window.addEventListener('resize', () => this.updateDesktopSplatFov());
   }
 
   // ==========================================
