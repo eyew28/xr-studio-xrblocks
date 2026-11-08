@@ -72,6 +72,29 @@ function yawOf(direction: THREE.Vector3): number {
   return Math.atan2(-direction.x, -direction.z);
 }
 
+type StickAxis = 'leftX' | 'leftY' | 'rightX' | 'rightY';
+const STICK_AXIS_LABELS: Record<StickAxis, string> = {
+  leftX: 'Left Stick X: Inversed',
+  leftY: 'Left Stick Y: Inversed',
+  rightX: 'Right Stick X: Inversed',
+  rightY: 'Right Stick Y: Inversed',
+};
+const STICK_INVERSION_STORAGE_KEY = 'xrStudio.stickInversion';
+
+/** Restores the viewer's stick settings; storage can be unavailable, so it's optional. */
+function loadStickInversion(): Record<StickAxis, boolean> {
+  const settings = { leftX: false, leftY: false, rightX: false, rightY: false };
+  try {
+    const saved = JSON.parse(localStorage.getItem(STICK_INVERSION_STORAGE_KEY) ?? '{}');
+    for (const axis of Object.keys(settings) as StickAxis[]) {
+      if (typeof saved[axis] === 'boolean') settings[axis] = saved[axis];
+    }
+  } catch {
+    // Use the defaults.
+  }
+  return settings;
+}
+
 /** xr-standard gamepad buttons that toggle the VR card: thumbstick click, A/X and B/Y. */
 const CARD_TOGGLE_BUTTON_INDICES = [3, 4, 5];
 /** A card shown again within this angle of the viewer's gaze stays where it was. */
@@ -202,6 +225,7 @@ export class XRMediaStudio extends xb.Script {
     { transparent: boolean; depthTest: boolean; depthWrite: boolean }
   >();
   private cardToggleButtonsDown = new WeakMap<XRInputSource, boolean[]>();
+  private stickInversion = loadStickInversion();
   private lastThumbstickUpdateMs = 0;
 
   // Sync state
@@ -398,6 +422,34 @@ export class XRMediaStudio extends xb.Script {
       children: [vrPrevBtn, vrNextBtn, vrUploadBtn, vrExitBtn],
     });
 
+    // Thumbstick inversion checkboxes, in two rows of two
+    const stickCheckbox = (axis: StickAxis) => {
+      const checkbox: xb.UIButton = new xb.UIButton({
+        label: STICK_AXIS_LABELS[axis],
+        icon: this.stickInversion[axis] ? 'check_box' : 'check_box_outline_blank',
+        style: { flexGrow: 1, flexBasis: 0 },
+        onClick: () => {
+          this.stickInversion[axis] = !this.stickInversion[axis];
+          checkbox.icon = this.stickInversion[axis] ? 'check_box' : 'check_box_outline_blank';
+          try {
+            localStorage.setItem(STICK_INVERSION_STORAGE_KEY, JSON.stringify(this.stickInversion));
+          } catch {
+            // The setting still applies for this visit.
+          }
+        },
+      });
+      return checkbox;
+    };
+    const stickRow = (axes: StickAxis[]) =>
+      new xb.UIPanel({
+        style: { width: '100%', flexDirection: 'row', gap: 8 },
+        children: axes.map(stickCheckbox),
+      });
+    const vrStickSettings = new xb.UIPanel({
+      style: { width: '100%', flexDirection: 'column', gap: 8, marginTop: 6 },
+      children: [stickRow(['leftX', 'leftY']), stickRow(['rightX', 'rightY'])],
+    });
+
     // Main In-VR Card Assembly
     this.vrCard = new xb.UICard({
       size: { width: 0.68, height: 'auto' },
@@ -422,6 +474,7 @@ export class XRMediaStudio extends xb.Script {
         this.vrVideoRow,
         this.vrSplatRow,
         vrNavRow,
+        vrStickSettings,
       ],
     });
 
@@ -1078,8 +1131,11 @@ export class XRMediaStudio extends xb.Script {
       // xr-standard mapping: axes 2 and 3 are the thumbstick, with forward negative.
       const axes = source.gamepad?.axes;
       if (!axes || axes.length < 4) continue;
-      const stickX = Math.abs(axes[2]) > THUMBSTICK_DEADZONE ? axes[2] : 0;
-      const stickY = Math.abs(axes[3]) > THUMBSTICK_DEADZONE ? axes[3] : 0;
+      const left = source.handedness === 'left';
+      const flipX = this.stickInversion[left ? 'leftX' : 'rightX'] ? -1 : 1;
+      const flipY = this.stickInversion[left ? 'leftY' : 'rightY'] ? -1 : 1;
+      const stickX = Math.abs(axes[2]) > THUMBSTICK_DEADZONE ? axes[2] * flipX : 0;
+      const stickY = Math.abs(axes[3]) > THUMBSTICK_DEADZONE ? axes[3] * flipY : 0;
 
       const distance = THUMBSTICK_MOVE_METERS_PER_SECOND * seconds;
       if (source.handedness === 'left') {
