@@ -72,6 +72,20 @@ function yawOf(direction: THREE.Vector3): number {
   return Math.atan2(-direction.x, -direction.z);
 }
 
+/** xr-standard gamepad buttons that toggle the VR card: thumbstick click, A/X and B/Y. */
+const CARD_TOGGLE_BUTTON_INDICES = [3, 4, 5];
+/** A card shown again within this angle of the viewer's gaze stays where it was. */
+const VR_CARD_IN_VIEW_RADIANS = THREE.MathUtils.degToRad(40);
+const VR_CARD_SUMMON_DISTANCE_METERS = 0.9;
+const VR_CARD_SUMMON_HEIGHT_OFFSET_METERS = -0.15;
+/** Sorts the VR card after the splat and everything else in the scene. */
+const VR_CARD_RENDER_ORDER = 1_000_000;
+/**
+ * xrblocks draws each card through a private copy named after it, so a unique
+ * name lets the app find this card's drawn parts.
+ */
+const VR_CARD_NAME = 'XR Studio VR Card';
+
 /** Share of splats trimmed from each end of each axis when measuring the subject. */
 const SPLAT_CORE_TRIM = 0.01;
 /** Enough positions to measure the subject without pausing on very large files. */
@@ -182,6 +196,12 @@ export class XRMediaStudio extends xb.Script {
   private splatBounds?: { center: THREE.Vector3; size: THREE.Vector3 };
   private splatDrag?: SplatDrag;
   private isDraggingVrCard = false;
+  private vrCardDrawn?: THREE.Object3D;
+  private vrCardMaterialDefaults = new Map<
+    THREE.Material,
+    { transparent: boolean; depthTest: boolean; depthWrite: boolean }
+  >();
+  private cardToggleButtonsDown = new WeakMap<XRInputSource, boolean[]>();
   private lastThumbstickUpdateMs = 0;
 
   // Sync state
@@ -407,7 +427,17 @@ export class XRMediaStudio extends xb.Script {
 
     // Anchor card 1.15m in front of user at comfortable chest/eye level
     this.vrCard.position.set(0, 1.25, -1.15);
+    this.vrCard.name = VR_CARD_NAME;
     this.add(this.vrCard);
+
+    // Runs just before three.js sorts the scene for drawing, after any UI
+    // updates, so the card's on-top settings are always in place.
+    const scene = xb.core.scene;
+    const previousOnBeforeRender = scene.onBeforeRender;
+    scene.onBeforeRender = (...args) => {
+      this.updateVrCardDrawOrder();
+      previousOnBeforeRender.apply(scene, args);
+    };
   }
 
   // ==========================================
@@ -1030,9 +1060,9 @@ export class XRMediaStudio extends xb.Script {
 
   /**
    * Left stick: moves the splat up/down, and left/right as the viewer sees it.
-   * Right stick: left/right rotates the splat, up/down brings it closer or
-   * moves it away. Only the axis pushed further applies, so pushing forward
-   * slightly off-center doesn't also spin the splat.
+   * Right stick: left/right rotates the splat, up/down moves the viewer
+   * forward or back the way they're facing. Only the axis pushed further
+   * applies, so pushing forward slightly off-center doesn't also spin the splat.
    */
   private updateThumbstickControls() {
     const now = performance.now();
@@ -1060,8 +1090,10 @@ export class XRMediaStudio extends xb.Script {
         }
       } else if (source.handedness === 'right') {
         if (Math.abs(stickY) > Math.abs(stickX)) {
-          // Forward is negative, so pushing up brings the splat toward the viewer.
-          this.moveSplatTowardViewer(-stickY * distance);
+          // The viewer can't move, so the splat moves the opposite way. Forward
+          // is negative, so pushing up brings the splat toward the viewer.
+          const forward = this.getLevelViewDirection();
+          if (forward) this.mediaGroup.position.addScaledVector(forward, stickY * distance);
         } else if (stickX !== 0 && !this.splatDrag) {
           const angle = stickX * THUMBSTICK_ROTATE_RADIANS_PER_SECOND * seconds;
           this.mediaGroup.quaternion.premultiply(
@@ -1074,24 +1106,84 @@ export class XRMediaStudio extends xb.Script {
   }
 
   /**
-   * Moves the splat level along the line to the viewer, whichever way they're
-   * facing. A negative distance moves it away. It stops on reaching the viewer
-   * instead of passing through and moving away on the other side.
+   * A, B, X, Y and thumbstick clicks show or hide the VR card. Triggers and
+   * grips are left alone, as they select, grab, rotate and scale.
    */
-  private moveSplatTowardViewer(distance: number) {
-    const toViewer = xb.core.renderer.xr
-      .getCamera()
-      .getWorldPosition(new THREE.Vector3())
-      .sub(this.mediaGroup.position);
-    toViewer.y = 0;
-    const gap = toViewer.length();
-    if (gap > 1e-3) {
-      this.mediaGroup.position.addScaledVector(toViewer.divideScalar(gap), Math.min(distance, gap));
-    } else if (distance < 0) {
-      // Standing at the splat's center, so "away" is simply where the viewer faces.
-      const forward = this.getLevelViewDirection();
-      if (forward) this.mediaGroup.position.addScaledVector(forward, -distance);
+  private updateCardToggleButtons() {
+    if (!this.state.isXrActive || !this.vrCard) return;
+    const session = xb.core.renderer.xr.getSession?.();
+    if (!session) return;
+
+    let toggle = false;
+    for (const source of session.inputSources) {
+      const buttons = source.gamepad?.buttons;
+      if (!buttons) continue;
+      const wasPressed = this.cardToggleButtonsDown.get(source) ?? [];
+      const pressed = CARD_TOGGLE_BUTTON_INDICES.map((index) => buttons[index]?.pressed ?? false);
+      if (pressed.some((down, i) => down && !wasPressed[i])) toggle = true;
+      this.cardToggleButtonsDown.set(source, pressed);
     }
+    if (!toggle) return;
+
+    this.vrCard.visible = !this.vrCard.visible;
+    if (this.vrCard.visible) this.bringVrCardIntoView();
+  }
+
+  /** Moves the card in front of the viewer if they've turned away from it. */
+  private bringVrCardIntoView() {
+    const card = this.vrCard;
+    if (!card) return;
+    const camera = xb.core.renderer.xr.getCamera();
+    const head = camera.getWorldPosition(new THREE.Vector3());
+    const gaze = camera.getWorldDirection(new THREE.Vector3());
+    const toCard = card.getWorldPosition(new THREE.Vector3()).sub(head);
+    if (toCard.lengthSq() > 1e-6 && toCard.angleTo(gaze) <= VR_CARD_IN_VIEW_RADIANS) return;
+
+    const forward = this.getLevelViewDirection() ?? new THREE.Vector3(0, 0, -1);
+    card.position
+      .copy(head)
+      .addScaledVector(forward, VR_CARD_SUMMON_DISTANCE_METERS)
+      .add(new THREE.Vector3(0, VR_CARD_SUMMON_HEIGHT_OFFSET_METERS, 0));
+    card.lookAt(head.x, card.position.y, head.z);
+  }
+
+  /**
+   * In VR and AR, draws the card over the splat so nearer parts of the splat
+   * can't hide it. three.js draws opaque objects before transparent ones like
+   * splats, so the card's parts move into the transparent pass, sorted last,
+   * with depth testing off. uikit's sort keeps the card's own layers in order.
+   * Desktop keeps normal drawing, and the original settings come back.
+   */
+  private updateVrCardDrawOrder() {
+    if (!this.vrCardDrawn?.parent) {
+      this.vrCardDrawn = xb.core.scene.getObjectByName(`Private ${VR_CARD_NAME}`);
+      if (!this.vrCardDrawn) return;
+    }
+    const onTop = this.state.isXrActive;
+    // A Group's renderOrder sorts everything inside it together.
+    this.vrCardDrawn.renderOrder = onTop ? VR_CARD_RENDER_ORDER : 0;
+    this.vrCardDrawn.traverse((object) => {
+      const material = (object as THREE.Mesh).material;
+      if (!material) return;
+      for (const m of Array.isArray(material) ? material : [material]) {
+        if (onTop) {
+          if (!this.vrCardMaterialDefaults.has(m)) {
+            this.vrCardMaterialDefaults.set(m, {
+              transparent: m.transparent,
+              depthTest: m.depthTest,
+              depthWrite: m.depthWrite,
+            });
+          }
+          m.transparent = true;
+          m.depthTest = false;
+          m.depthWrite = false;
+        } else {
+          const defaults = this.vrCardMaterialDefaults.get(m);
+          if (defaults) Object.assign(m, defaults);
+        }
+      }
+    });
+    if (!onTop) this.vrCardMaterialDefaults.clear();
   }
 
   /** The viewer's facing direction, ignoring up/down tilt. Undefined when looking straight up or down. */
@@ -1526,6 +1618,7 @@ export class XRMediaStudio extends xb.Script {
 
   update() {
     this.updateThumbstickControls();
+    this.updateCardToggleButtons();
 
     // Desktop Camera Pan (when not presenting WebXR)
     if (!xb.core.renderer.xr.isPresenting) {
@@ -1546,6 +1639,7 @@ export class XRMediaStudio extends xb.Script {
 
   onXRSessionStarted(session?: XRSession) {
     this.state.isXrActive = true;
+    if (this.vrCard) this.vrCard.visible = true;
     this.syncVrInteraction();
     document.getElementById('desktopHud')?.classList.add('hidden');
     this.updateVrCard();
